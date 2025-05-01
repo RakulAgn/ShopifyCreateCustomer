@@ -17,7 +17,7 @@ async function main() {
     // Get configuration from environment variables
     const customerSettings = {
       totalCustomers: Number(process.env.TOTAL_CUSTOMERS) || 1000000,
-      batchSize: Number(process.env.BATCH_SIZE) || 10,
+      batchSize: Number(process.env.BATCH_SIZE),
       apiCallsPerSecond: Number(process.env.API_CALLS_PER_SECOND) || 2,
       chunkSize: Number(process.env.CHUNK_SIZE) || 1000,
     };

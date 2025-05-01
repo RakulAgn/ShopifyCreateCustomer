@@ -45,7 +45,7 @@ class ShopifyCustomerCreator {
       shopifyDomain: config.shopifyDomain || process.env.SHOPIFY_DOMAIN,
       accessToken: accessToken,
       totalCustomers: config.totalCustomers || Number(process.env.TOTAL_CUSTOMERS) || 1000000,
-      batchSize: config.batchSize || Number(process.env.BATCH_SIZE) || 10,
+      batchSize: config.batchSize || Number(process.env.BATCH_SIZE),
       apiCallsPerSecond: config.apiCallsPerSecond || Number(process.env.API_CALLS_PER_SECOND) || 2,
       chunkSize: config.chunkSize || Number(process.env.CHUNK_SIZE) || 1000,
       createOrders: config.createOrders || process.env.CREATE_ORDERS === 'true',
