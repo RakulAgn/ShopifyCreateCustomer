@@ -1,208 +1,90 @@
-/**
- * Shopify Bulk Import Tool
- * Main entry file for creating customers and orders in Shopify
- */
 require('dotenv').config();
-const ShopifyCustomerCreator = require('./shopifyCustomerCreator');
-const crypto = require('crypto');
+const axios = require('axios');
 
-async function main() {
-  try {
-    console.log('Shopify Bulk Import Tool - Started');
-    console.log('-----------------------------------');
+const SHOP = process.env.SHOPIFY_DOMAIN;
+const TOKEN = process.env.ACCESS_TOKEN;
+const API_BASE = `https://${SHOP}/admin/api/2023-10`;
 
-    // Validate token before proceeding
-    validateTokenSettings();
+const headers = {
+  'Content-Type': 'application/json',
+  'X-Shopify-Access-Token': TOKEN,
+};
 
-    // Get configuration from environment variables
-    const customerSettings = {
-      totalCustomers: Number(process.env.TOTAL_CUSTOMERS) || 1000000,
-      batchSize: Number(process.env.BATCH_SIZE),
-      apiCallsPerSecond: Number(process.env.API_CALLS_PER_SECOND) || 2,
-      chunkSize: Number(process.env.CHUNK_SIZE) || 1000,
-    };
+const sleep = ms => new Promise(res => setTimeout(res, ms));
 
-    // Order creation settings
-    const createOrders = process.env.CREATE_ORDERS === 'true';
-    const orderSettings = {
-      ordersPerCustomer: Number(process.env.ORDERS_PER_CUSTOMER) || 1,
-      orderRateLimit: Number(process.env.ORDER_RATE_LIMIT) || 1,
-      orderBatchSize: Number(process.env.ORDER_BATCH_SIZE) || 5,
-      orderChunkSize: Number(process.env.ORDER_CHUNK_SIZE) || 100,
-      orderStatus: process.env.ORDER_STATUS || 'completed',
-      orderFinancialStatus: process.env.ORDER_FINANCIAL_STATUS || 'paid',
-      orderFulfillmentStatus: process.env.ORDER_FULFILLMENT_STATUS || 'fulfilled',
-    };
+async function getAllProductVariants() {
+  const res = await axios.get(`${API_BASE}/products.json?limit=250`, { headers });
+  return res.data.products.flatMap(p => p.variants.map(v => ({ variant: v, product: p })));
+}
 
-    // Customer tags from environment
-    const customerTags = process.env.CUSTOMER_TAGS || 'API_Created, Bulk_Import';
+async function createOrder(variantObj, index) {
+  const { variant, product } = variantObj;
+  const emailRand = Math.floor(Math.random() * 1000000);
 
-    // Log configuration
-    console.log('Configuration from environment variables:');
-    console.log('\nCustomer Creation Settings:');
-    console.log(`- Total Customers: ${customerSettings.totalCustomers}`);
-    console.log(`- Batch Size: ${customerSettings.batchSize}`);
-    console.log(`- API Rate Limit: ${customerSettings.apiCallsPerSecond} calls/second`);
-    console.log(`- Chunk Size: ${customerSettings.chunkSize}`);
-    console.log(`- Customer Tags: ${customerTags}`);
+  const order = {
+    order: {
+      line_items: [{ variant_id: variant.id, quantity: 1 }],
+      financial_status: 'paid',
+      fulfillment_status: 'fulfilled',
+      customer: {
+        first_name: 'Test',
+        last_name: `User${index}`,
+        email: `testuser${emailRand}@example.com`,
+        email_marketing_consent: {
+          state: 'subscribed',
+          opt_in_level: 'single_opt_in',
+          consent_updated_at: new Date().toISOString(),
+        },
+        accepts_marketing: true,
+      },
+      shipping_address: {
+        first_name: 'Test',
+        last_name: `User${index}`,
+        address1: '123 Automation Lane',
+        city: 'Cityville',
+        province: 'CA',
+        country: 'US',
+        zip: '90001',
+      },
+    },
+  };
 
-    console.log('\nOrder Creation Settings:');
-    console.log(`- Order Creation: ${createOrders ? 'Enabled' : 'Disabled'}`);
+  let retries = 0;
+  const maxRetries = 5;
 
-    if (createOrders) {
-      console.log(`- Orders Per Customer: ${orderSettings.ordersPerCustomer}`);
-      console.log(`- Order API Rate Limit: ${orderSettings.orderRateLimit} calls/second`);
-      console.log(`- Order Batch Size: ${orderSettings.orderBatchSize}`);
-      console.log(`- Order Chunk Size: ${orderSettings.orderChunkSize}`);
-      console.log(`- Order Status: ${orderSettings.orderStatus}`);
-      console.log(`- Financial Status: ${orderSettings.orderFinancialStatus}`);
-      console.log(`- Fulfillment Status: ${orderSettings.orderFulfillmentStatus}`);
+  while (retries < maxRetries) {
+    try {
+      await axios.post(`${API_BASE}/orders.json`, order, { headers });
+      console.log(`✅ Order #${index + 1} created for ${product.title}`);
+      return;
+    } catch (err) {
+      const isRateLimit = err.response?.status === 429 || /rate limit/i.test(err.response?.data?.errors || '');
+
+      if (isRateLimit) {
+        console.warn(`⚠️ Rate limit hit on Order #${index + 1}, retrying in 60s...`);
+        await sleep(60000); // wait 60s before retry
+        retries++;
+      } else {
+        console.error(`❌ Order #${index + 1} failed:`, err.response?.data || err.message);
+        return;
+      }
     }
-
-    // Verify required environment variables are set
-    const requiredEnvVars = ['SHOPIFY_DOMAIN', 'ACCESS_TOKEN'];
-    const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
-
-    if (missingVars.length > 0) {
-      throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
-    }
-
-    // Get the access token (might be pre-decrypted or not depending on validateTokenSettings)
-    const accessToken = process.env.SHOPIFY_TOKEN_DECRYPTED || process.env.ACCESS_TOKEN;
-
-    // Create instance with appropriate config from environment
-    const creator = new ShopifyCustomerCreator({
-      shopifyDomain: process.env.SHOPIFY_DOMAIN,
-      accessToken: accessToken,
-      // Customer settings
-      totalCustomers: customerSettings.totalCustomers,
-      batchSize: customerSettings.batchSize,
-      apiCallsPerSecond: customerSettings.apiCallsPerSecond,
-      chunkSize: customerSettings.chunkSize,
-      // Order settings
-      createOrders: createOrders,
-      ordersPerCustomer: orderSettings.ordersPerCustomer,
-      orderRateLimit: orderSettings.orderRateLimit,
-      orderBatchSize: orderSettings.orderBatchSize,
-      orderChunkSize: orderSettings.orderChunkSize,
-      orderStatus: orderSettings.orderStatus,
-      orderFinancialStatus: orderSettings.orderFinancialStatus,
-      orderFulfillmentStatus: orderSettings.orderFulfillmentStatus,
-    });
-
-    // Add custom data from environment variables
-    const customData = {
-      tags: customerTags,
-      // Any additional custom fields
-    };
-
-    console.log('\nInitiating bulk creation process...');
-    const results = await creator.run(customData);
-
-    // Summary
-    const customers = results.map(r => r.customer);
-    const orders = results.reduce((sum, r) => sum + (r.orders ? r.orders.length : 0), 0);
-
-    console.log('\n=== SUMMARY ===');
-    console.log(`Customers created: ${customers.length}`);
-    if (createOrders) {
-      console.log(`Orders created: ${orders}`);
-      console.log(`Average orders per customer: ${(orders / Math.max(1, customers.length)).toFixed(2)}`);
-    }
-    console.log('===============\n');
-
-    console.log('Process completed successfully.');
-  } catch (error) {
-    console.error('\nFATAL ERROR:', error);
-    console.error('Process terminated with errors.');
-    process.exit(1);
   }
+
+  console.error(`❌ Order #${index + 1} failed after ${maxRetries} retries`);
 }
 
-/**
- * Check and validate token settings
- * This will try to detect if the token needs decryption and handle it accordingly
- */
-function validateTokenSettings() {
-  const token = process.env.ACCESS_TOKEN;
+async function run() {
+  const variants = await getAllProductVariants();
+  const totalOrders = 5000;
 
-  if (!token) {
-    console.error('No ACCESS_TOKEN provided in environment variables');
-    return;
+  for (let i = 0; i < totalOrders; i++) {
+    const variant = variants[i % variants.length];
+    await createOrder(variant, i);
+    await sleep(2000); // space requests to 1 every 2s for safety
   }
 
-  console.log(`Access token found (${token.length} characters)`);
-
-  // Detect if this is a Shopify token (they start with shpat_ or shpua_)
-  if (token.startsWith('shpat_') || token.startsWith('shpua_')) {
-    console.log('Detected native Shopify token format - no decryption needed');
-    process.env.SKIP_TOKEN_DECRYPTION = 'true';
-    process.env.SHOPIFY_TOKEN_DECRYPTED = token;
-    return;
-  }
-
-  // Check if decryption should be skipped
-  if (process.env.SKIP_TOKEN_DECRYPTION === 'true') {
-    console.log('Token decryption skipped due to SKIP_TOKEN_DECRYPTION=true');
-    process.env.SHOPIFY_TOKEN_DECRYPTED = token;
-    return;
-  }
-
-  // If we need to decrypt, check for the secret
-  if (!process.env.SHOPIFY_API_SECRET) {
-    console.warn('SHOPIFY_API_SECRET not provided, but token appears encrypted. Decryption may fail.');
-    return;
-  }
-
-  // Try to decrypt the token and save it for use
-  try {
-    const decryptedToken = decryptToken(token, process.env.SHOPIFY_API_SECRET);
-    if (decryptedToken && (decryptedToken.startsWith('shpat_') || decryptedToken.startsWith('shpua_'))) {
-      console.log('Token successfully decrypted to Shopify format');
-      process.env.SHOPIFY_TOKEN_DECRYPTED = decryptedToken;
-    } else {
-      console.warn('Token was decrypted but does not match expected Shopify format');
-      process.env.SHOPIFY_TOKEN_DECRYPTED = decryptedToken;
-    }
-  } catch (error) {
-    console.error('Failed to decrypt token:', error.message);
-    console.warn('Will attempt to use the token as-is');
-    process.env.SHOPIFY_TOKEN_DECRYPTED = token;
-  }
+  console.log('🎉 Finished creating all orders safely');
 }
 
-/**
- * Try to decrypt a token using both modern and legacy methods
- * @param {string} token - The encrypted token
- * @param {string} secret - The secret key for decryption
- * @returns {string} - The decrypted token
- */
-function decryptToken(token, secret) {
-  try {
-    const algorithm = 'aes256';
-    const decipher = crypto.createDecipher(algorithm, secret);
-    let dec = decipher.update(token, 'hex', 'utf8');
-    dec += decipher.final('utf8');
-    return dec;
-  } catch (legacyError) {
-    console.error('Legacy decryption also failed:', legacyError.message);
-    // Return token as-is if both methods fail
-    return token;
-  }
-}
-
-// Add support for command-line testing
-if (process.env.USE_TEST_TOKEN === 'true') {
-  process.env.ACCESS_TOKEN = process.env.TEST_TOKEN || process.env.ACCESS_TOKEN;
-  process.env.SKIP_TOKEN_DECRYPTION = 'true';
-  console.log('Using test token from environment');
-}
-
-// Support for testing with dummy products when needed
-if (process.env.USE_DUMMY_PRODUCTS !== 'true' && process.argv.includes('--dummy-products')) {
-  process.env.USE_DUMMY_PRODUCTS = 'true';
-  console.log('Using dummy products for testing (from command line)');
-}
-
-// Run the main function
-main();
+run();
